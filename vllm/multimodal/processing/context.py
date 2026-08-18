@@ -257,6 +257,30 @@ class InputProcessingContext:
         mm_config = self.model_config.get_multimodal_config()
         return mm_config.merge_mm_processor_kwargs(kwargs)
 
+    @staticmethod
+    def _drop_scoped_duplicates(kwargs: dict[str, object]) -> dict[str, object]:
+        """Drop scoped keys that a flat kwarg already carries.
+
+        The HF processor raises when the same key arrives both flat and inside
+        a per-modality dict (``videos_kwargs``/``images_kwargs``). Model code
+        derives flat per-item values (e.g. Qwen3-VL's per-video ``size``) from
+        the scoped override, so on collision the flat value is the resolved
+        one and the scoped copy is redundant.
+        """
+        for scope in ("images_kwargs", "videos_kwargs"):
+            scoped = kwargs.get(scope)
+            if not isinstance(scoped, Mapping):
+                continue
+            duplicated = scoped.keys() & kwargs.keys()
+            if not duplicated:
+                continue
+            pruned = {k: v for k, v in scoped.items() if k not in duplicated}
+            if pruned:
+                kwargs[scope] = pruned
+            else:
+                del kwargs[scope]
+        return kwargs
+
     def call_hf_processor(
         self,
         hf_processor: Callable[..., BatchFeature] | ProcessorMixin,
@@ -272,7 +296,9 @@ class InputProcessingContext:
         """
         assert callable(hf_processor)
 
-        merged_kwargs = self.get_merged_mm_kwargs(kwargs)
+        merged_kwargs = self._drop_scoped_duplicates(
+            dict(self.get_merged_mm_kwargs(kwargs))
+        )
 
         allowed_kwargs = get_allowed_kwarg_only_overrides(
             hf_processor,
