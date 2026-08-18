@@ -190,6 +190,25 @@ class MultiModalCache:
             getsizeof=lambda x: cls.get_item_size(x, debug=debug),
         )
 
+    @classmethod
+    def put_if_fits(cls, cache: LRUCache[str, _V], mm_hash: str, value: _V) -> None:
+        """Insert into the cache unless the item alone exceeds its capacity.
+
+        `cachetools.Cache.__setitem__` raises ``ValueError("value too large")``
+        for such items, which would propagate out of processing (during memory
+        profiling it kills engine startup). An item bigger than the whole cache
+        can never be a hit anyway, so serve it uncached instead.
+        """
+        if cache.getsizeof(value) > cache.maxsize:
+            logger.warning_once(
+                "A processed multi-modal item exceeds the entire multi-modal "
+                "processor cache capacity; it will not be cached. Raise "
+                "mm_processor_cache_gb to cache items of this size."
+            )
+            return
+
+        cache[mm_hash] = value
+
 
 _I = TypeVar("_I", contravariant=True)
 _O = TypeVar("_O", covariant=True)
@@ -389,7 +408,9 @@ class MultiModalProcessorOnlyCache(BaseMultiModalProcessorCache):
 
         assert mm_item is not None, f"Expected a cached item for {mm_hash=}"
 
-        self._cache[mm_hash] = MultiModalProcessorCacheItem(*mm_item)
+        MultiModalCache.put_if_fits(
+            self._cache, mm_hash, MultiModalProcessorCacheItem(*mm_item)
+        )
 
         return mm_item
 
@@ -447,7 +468,9 @@ class MultiModalProcessorSenderCache(BaseMultiModalProcessorCache):
 
         assert mm_item is not None, f"Expected a cached item for {mm_hash=}"
 
-        self._cache[mm_hash] = MultiModalProcessorCacheItemMetadata(*mm_item)
+        MultiModalCache.put_if_fits(
+            self._cache, mm_hash, MultiModalProcessorCacheItemMetadata(*mm_item)
+        )
 
         return mm_item
 
@@ -709,7 +732,7 @@ class MultiModalReceiverCache(BaseMultiModalReceiverCache):
         if mm_item is None:
             raise MultiModalCacheMissError([mm_hash])
 
-        self._cache[mm_hash] = mm_item
+        MultiModalCache.put_if_fits(self._cache, mm_hash, mm_item)
         return mm_item
 
     @override
