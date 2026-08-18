@@ -165,6 +165,29 @@ logger = init_logger(__name__)
 # of the maximum size.
 DUMMY_VIDEO_NUM_FRAMES = 2048
 
+_MODALITY_SCOPED_KEYS = ("images_kwargs", "videos_kwargs")
+
+
+def _resolve_modality_mm_kwargs(
+    mm_kwargs: Mapping[str, object],
+    modality: str,
+) -> Mapping[str, object]:
+    """Overlay HF-style ``<modality>s_kwargs`` onto the flat kwarg namespace.
+
+    The HF processor's ``__call__`` already honors structured per-modality
+    kwargs (e.g. ``videos_kwargs={"size": ...}``) via ``_merge_kwargs``, so
+    users can scope an override to one modality. vLLM's own budget and
+    profiling reads must resolve them the same way; otherwise runtime
+    processing and memory profiling disagree about item sizes. A scoped dict
+    wins over a flat key for its own modality and is invisible to the other.
+    """
+    flat = {k: v for k, v in mm_kwargs.items() if k not in _MODALITY_SCOPED_KEYS}
+    scoped = mm_kwargs.get(f"{modality}s_kwargs")
+    if isinstance(scoped, Mapping):
+        return {**flat, **scoped}
+    return flat
+
+
 # ---------------------------------------------------------------------------
 # Triton kernel: fused bilinear position-embedding interpolation
 # ---------------------------------------------------------------------------
@@ -931,7 +954,10 @@ class Qwen3VLProcessingInfo(Qwen2VLProcessingInfo):
         merge_size = vision_config.spatial_merge_size
         temporal_patch_size = vision_config.temporal_patch_size
 
-        mm_kwargs = self.ctx.get_merged_mm_kwargs(mm_kwargs)
+        mm_kwargs = _resolve_modality_mm_kwargs(
+            self.ctx.get_merged_mm_kwargs(mm_kwargs),
+            "video" if is_video else "image",
+        )
         size = image_processor.size
         if override_size := mm_kwargs.get("size"):
             size = size | override_size
@@ -995,7 +1021,9 @@ class Qwen3VLProcessingInfo(Qwen2VLProcessingInfo):
     ) -> int:
         video_processor = self.get_video_processor()
 
-        mm_kwargs = self.ctx.get_merged_mm_kwargs({})
+        mm_kwargs = _resolve_modality_mm_kwargs(
+            self.ctx.get_merged_mm_kwargs({}), "video"
+        )
         video_size = mm_kwargs.get("size", video_processor.size)
         temporal_patch_size = mm_kwargs.get(
             "temporal_patch_size", video_processor.temporal_patch_size
@@ -1131,7 +1159,9 @@ class Qwen3VLDummyInputsBuilder(BaseDummyInputsBuilder[Qwen3VLProcessingInfo]):
 
         video_processor = self.info.get_video_processor()
 
-        mm_kwargs = self.info.ctx.get_merged_mm_kwargs({})
+        mm_kwargs = _resolve_modality_mm_kwargs(
+            self.info.ctx.get_merged_mm_kwargs({}), "video"
+        )
         video_size = mm_kwargs.get("size", video_processor.size)
         temporal_patch_size = mm_kwargs.get(
             "temporal_patch_size", video_processor.temporal_patch_size
@@ -1331,7 +1361,9 @@ class Qwen3VLMultiModalProcessor(BaseMultiModalProcessor[Qwen3VLProcessingInfo])
                 # NOTE: a copy of is created to update do_sample_frames,
                 # otherwise mm_hash for the object will be incorrect.
                 video_mm_kwargs = dict(**mm_kwargs)
-                merged = self.info.ctx.get_merged_mm_kwargs(mm_kwargs)
+                merged = _resolve_modality_mm_kwargs(
+                    self.info.ctx.get_merged_mm_kwargs(mm_kwargs), "video"
+                )
                 if merged.keys() & {"size", "min_pixels", "max_pixels"}:
                     video_size = dict(self.info.get_video_processor().size)
                     size_override = merged.get("size")
