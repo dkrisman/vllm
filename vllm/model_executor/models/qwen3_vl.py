@@ -1137,17 +1137,12 @@ class Qwen3VLDummyInputsBuilder(BaseDummyInputsBuilder[Qwen3VLProcessingInfo]):
             "temporal_patch_size", video_processor.temporal_patch_size
         )
 
-        # With a per-frame pixel cap active (the HF processor's
-        # max_pixels_per_frame kwarg, or the local
-        # video_max_pixels_per_frame config fallback), a 2-frame dummy
+        # With the HF processor's max_pixels_per_frame set, a 2-frame dummy
         # would be processed at only 2 * cap pixels and memory profiling
-        # would underestimate the true maximum item (a fully sampled
-        # video still reaches the full budget). Spread the same total
-        # budget over enough frames that the cap is not binding for the
-        # dummy.
+        # would underestimate the true maximum item (a fully sampled video
+        # still reaches the full budget). Spread the same total budget over
+        # enough frames that the cap is not binding for the dummy.
         per_frame_cap = mm_kwargs.get("max_pixels_per_frame")
-        if per_frame_cap is None:
-            per_frame_cap = self.info.ctx.get_mm_config().video_max_pixels_per_frame
         if per_frame_cap is not None:
             target_num_frames = max(
                 target_num_frames,
@@ -1361,27 +1356,6 @@ class Qwen3VLMultiModalProcessor(BaseMultiModalProcessor[Qwen3VLProcessingInfo])
                     video_mm_kwargs["do_sample_frames"] = metadata.get(
                         "do_sample_frames", False
                     )
-
-                # The HF processor spreads size["longest_edge"] across all
-                # sampled frames, so under a large budget a short clip keeps
-                # near-native per-frame resolution and can cost nearly as
-                # many tokens as an hour-long video. When configured, cap the
-                # per-item budget at num_frames * video_max_pixels_per_frame
-                # so prompt cost scales with clip duration. Only possible for
-                # presampled videos (frame count known here).
-                per_frame_cap = self.info.ctx.get_mm_config().video_max_pixels_per_frame
-                if (
-                    per_frame_cap is not None
-                    and not video_mm_kwargs["do_sample_frames"]
-                ):
-                    video_size = video_mm_kwargs.get(
-                        "size", dict(self.info.get_video_processor().size)
-                    )
-                    scaled_budget = len(video_array) * per_frame_cap
-                    if scaled_budget < video_size["longest_edge"]:
-                        video_mm_kwargs["size"] = video_size | {
-                            "longest_edge": scaled_budget
-                        }
 
                 metadata = VideoMetadata(
                     **{k: metadata[k] for k in metadata if k != "do_sample_frames"}
