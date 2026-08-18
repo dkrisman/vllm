@@ -1137,12 +1137,17 @@ class Qwen3VLDummyInputsBuilder(BaseDummyInputsBuilder[Qwen3VLProcessingInfo]):
             "temporal_patch_size", video_processor.temporal_patch_size
         )
 
-        # With video_max_pixels_per_frame set, a 2-frame dummy would be
-        # processed at only 2 * cap pixels and memory profiling would
-        # underestimate the true maximum item (a fully sampled video still
-        # reaches the full budget). Spread the same total budget over enough
-        # frames that the cap is not binding for the dummy.
-        per_frame_cap = self.info.ctx.get_mm_config().video_max_pixels_per_frame
+        # With a per-frame pixel cap active (the HF processor's
+        # max_pixels_per_frame kwarg, or the local
+        # video_max_pixels_per_frame config fallback), a 2-frame dummy
+        # would be processed at only 2 * cap pixels and memory profiling
+        # would underestimate the true maximum item (a fully sampled
+        # video still reaches the full budget). Spread the same total
+        # budget over enough frames that the cap is not binding for the
+        # dummy.
+        per_frame_cap = mm_kwargs.get("max_pixels_per_frame")
+        if per_frame_cap is None:
+            per_frame_cap = self.info.ctx.get_mm_config().video_max_pixels_per_frame
         if per_frame_cap is not None:
             target_num_frames = max(
                 target_num_frames,
